@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import crypto from 'crypto';
 import { parse } from "url";
+import http from 'http';
 //import { Redis } from '@upstash/redis';
 import Redis from 'ioredis';
 import { db } from './db/offlineMessage.js';
@@ -9,8 +10,22 @@ const localConnections = new Map();
 const SERVER_ID = `server_${crypto.randomBytes(4).toString('hex')}`;
 const PORT = process.env.PORT || 8080;
 
-const wss = new WebSocketServer({ port: PORT });
-console.log(`Chat server [${SERVER_ID}] running on port ${PORT}`);
+//const wss = new WebSocketServer({ port: PORT });
+//console.log(`Chat server [${SERVER_ID}] running on port ${PORT}`);
+const server = http.createServer((req, res) => {
+  if (req.url === '/health') {
+    res.writeHead(200);
+    return res.end('ok');
+  }
+  res.writeHead(404);
+  res.end();
+});
+
+const wss = new WebSocketServer({ server });
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Chat server [${SERVER_ID}] running on port ${PORT}`);
+});
 
 // redis configuration for pub and sub
 const redisUrl = process.env.REDIS_URL;
