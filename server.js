@@ -5,7 +5,7 @@ import http from 'http';
 //import { Redis } from '@upstash/redis';
 import Redis from 'ioredis';
 import { db } from './db/offlineMessage.js';
-import { authenticateToken } from './auth.js'; 
+import { authenticateToken } from './db/auth.js'; 
 const localConnections = new Map();
 const SERVER_ID = `server_${crypto.randomBytes(4).toString('hex')}`;
 const PORT = process.env.PORT || 8080;
