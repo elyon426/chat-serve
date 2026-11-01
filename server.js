@@ -5,7 +5,7 @@ import http from 'http';
 //import { Redis } from '@upstash/redis';
 import Redis from 'ioredis';
 import { db } from './db/offlineMessage.js';
-
+import { authenticateToken } from './auth.js'; 
 const localConnections = new Map();
 const SERVER_ID = `server_${crypto.randomBytes(4).toString('hex')}`;
 const PORT = process.env.PORT || 8080;
@@ -59,6 +59,35 @@ sub.on('message', (channel, incomingPayload) => {
         console.error(`[${SERVER_ID}] Failed to route cross-server message`, err);
     }
 });
+/**helper function to securely fetch offline messages sort them chronologically */
+async function fetchAndDeliverOfflineMessages(userId,ws){
+    try{
+        const offlineInboxCollection = db.collection("offline_inbox");
+        const offlineMessages = await offlineInboxCollection.find({ userId }).toArray();
+        if(!offlineMessages || offlineMessages.length === 0){
+            return;
+        }
+        offlineMessages.sort((a,b)=> new Date(a.timestamp) - new Date(b.timestamp));
+        for(const msg of offlineMessages){
+            if(ws.readyState === WebSocket.OPEN){
+                ws.send(JSON.stringify({
+                    messageId: msg.messageId,
+                    senderId: msg.senderId,
+                    targetId: msg.userId,
+                    content: msg.content,
+                    mediaUrl: msg.mediaUrl,
+                    timestamp: msg.timestamp
+                }));
+            }
+        }
+        // 4. Delete messages from Astra DB so they don't get delivered again on the next login
+        await offlineInboxCollection.deleteMany({ userId });
+        console.log(`[${SERVER_ID}] Successfully cleared offline cache for User ${userId}.`);
+    } catch (err) {
+        console.error(`[${SERVER_ID}] Failed to fetch and deliver offline messages`, err);
+    }
+}
+
 
 wss.on('connection', async (ws, req) => {
     const { query } = parse(req.url, true);
@@ -83,15 +112,18 @@ wss.on('connection', async (ws, req) => {
     const userId = String(authResult.userId);
 
 
-    if (!userId) {
-        ws.close(4000, "Missing userId query parameter");
-        return;
-    }
+      
+    
 
     // register users globally and locally
     localConnections.set(userId, ws);
     await pub.hset(REGISTRY_KEY, userId, SERVER_ID);
     console.log(`[${SERVER_ID}] User ${userId} joined.`);
+
+    // Inform client that authentication succeeded
+    ws.send(JSON.stringify({ type: "AUTH_SUCCESS", userId }));
+    // ─── OFFLINE INBOX LOOP RUNS HERE ONCE USER OBJECT ID IS SECURELY BOUND ───
+    await fetchAndDeliverOfflineMessages(userId, ws);
 
     ws.on('message', async (messageData) => {
         try {
