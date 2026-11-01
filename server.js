@@ -62,7 +62,26 @@ sub.on('message', (channel, incomingPayload) => {
 
 wss.on('connection', async (ws, req) => {
     const { query } = parse(req.url, true);
-    const userId = query.userId;
+    const plainToken = query.token;
+
+    if (!plainToken) {
+        ws.send(JSON.stringify({ type: "AUTH_ERROR", error: "Missing token parameter" }));
+        ws.close(4001, "Missing token parameter");
+        return;
+    }
+    // 2. Run your authentication function to get a definite answer immediately
+    const authResult = await authenticateToken(plainToken);
+
+    if (authResult.error) {
+        // If an error happens (InvalidToken, InternalServerError), inform client and drop connection
+        ws.send(JSON.stringify({ type: "AUTH_ERROR", error: authResult.error }));
+        ws.close(4003, authResult.error);
+        return;
+    }
+
+    // 3. Extract the trusted userId returned securely by your database hash check
+    const userId = String(authResult.userId);
+
 
     if (!userId) {
         ws.close(4000, "Missing userId query parameter");
@@ -104,7 +123,15 @@ wss.on('connection', async (ws, req) => {
                     localTargetWs.send(serializedPayload);
                 }
                 //notify user that msg is received
+                // Notify sender that message was delivered directly on this instance
+                ws.send(JSON.stringify({
+                    status: "msg_ack",
+                    messageId,
+                    targetId,
+                    deliveryMode: "direct"
+                }));
                 return;
+                
             }
 
             // Route 2: Intelligent Global Routing
@@ -114,6 +141,13 @@ wss.on('connection', async (ws, req) => {
                 const targetChannel = `channel_${targetServerId}`;
                 await pub.publish(targetChannel, serializedPayload);
                 //notify user msg is sent and received
+                // Notify sender that message was routed over Redis pub/sub
+                ws.send(JSON.stringify({
+                    status: "msg_ack",
+                    messageId,
+                    targetId,
+                    deliveryMode: "routed_cross_server"
+                }));
             } else {
                 console.log(`User ${targetId} is offline. Routing transaction to Astra DB...`);
 
