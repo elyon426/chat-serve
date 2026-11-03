@@ -11,6 +11,7 @@
   "license": "ISC",
   "dependencies": {
     "@datastax/astra-db-ts": "^2.3.0",
+    "@neondatabase/serverless": "^1.2.0",
     "@upstash/redis": "^1.39.0",
     "cassandra-driver": "^4.10.0",
     "crypto": "^1.0.1",
