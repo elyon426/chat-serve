@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Chat</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1c2230; --muted:#667085; --line:#d9dde5; --accent:#2457d6; --ok:#1a7f4b; --bad:#b42318; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171d; --card:#1c2029; --text:#e6e9f0; --muted:#98a2b3; --line:#2f3644; --accent:#6c96ff; --ok:#4cc38a; --bad:#ff7b72; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--text); font:16px/1.45 system-ui, sans-serif; }
+  .wrap { max-width:560px; margin:0 auto; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:12px; }
+  .me { font-size:18px; font-weight:600; }
+  .status { font-size:14px; color:var(--muted); }
+  .status.ok { color:var(--ok); } .status.bad { color:var(--bad); }
+  label { display:block; font-size:13px; color:var(--muted); margin-bottom:4px; }
+  input { width:100%; padding:10px; border:1px solid var(--line); border-radius:6px; background:transparent; color:var(--text); font:inherit; }
+  .row { display:flex; gap:8px; }
+  button { padding:10px 16px; border:0; border-radius:6px; background:var(--accent); color:#fff; font:inherit; cursor:pointer; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.copy { background:transparent; color:var(--text); border:1px solid var(--line); }
+  input:focus-visible, button:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  #log { height:300px; overflow:auto; font-size:15px; }
+  #log div { margin-bottom:6px; word-break:break-word; }
+  .sent { text-align:right; color:var(--accent); } .recv { color:var(--ok); } .info { color:var(--muted); font-size:13px; } .err { color:var(--bad); font-size:13px; }
+  details { font-size:13px; color:var(--muted); }
+  details input { margin-top:6px; font-family:ui-monospace, Menlo, Consolas, monospace; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div class="status" id="status">Connecting. This can take up to a minute if the server was asleep.</div>
+    <div class="row" style="align-items:center; margin-top:6px">
+      <div class="me">Your ID: <span id="me"></span></div>
+      <button class="copy" id="copy">Copy</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <label for="to">Send to (paste the other page's ID)</label>
+    <input id="to" placeholder="e.g. user-4821" />
+  </div>
+
+  <div class="card"><div id="log" aria-live="polite"></div></div>
+
+  <div class="card">
+    <div class="row">
+      <input id="msg" placeholder="Type a message" aria-label="Message" />
+      <button id="send" disabled>Send</button>
+    </div>
+    <details style="margin-top:10px">
+      <summary>Message format (only change if nothing arrives)</summary>
+      <input id="fmt" value='{"targetId":"{{to}}","content":"{{text}}"}' />
+    </details>
+  </div>
+</div>
+
+<script>
+  const SERVER = "wss://chat-server-docker-fy2r.onrender.com";
+
+  // Each page gets its own random ID. It's kept per tab, so a refresh keeps the same ID.
+  let me = sessionStorage.getItem("chatUserId");
+  if (!me) { me = "user-" + Math.floor(1000 + Math.random() * 9000); sessionStorage.setItem("chatUserId", me); }
+  document.getElementById("me").textContent = me;
+  document.title = "Chat: " + me;
+
+  const $ = (id) => document.getElementById(id);
+  function log(text, cls) {
+    const d = document.createElement("div");
+    d.className = cls || "info";
+    d.textContent = text;
+    $("log").appendChild(d);
+    $("log").scrollTop = $("log").scrollHeight;
+  }
+  function status(t, c) { $("status").textContent = t; $("status").className = "status " + (c || ""); }
+
+  let ws, retry = 0, openedAt = 0, lastSentAt = 0;
+  function connect() {
+    ws = new WebSocket(SERVER + "/?userId=" + encodeURIComponent(me));
+    ws.onopen = () => { openedAt = Date.now(); retry = 0; status("Connected", "ok"); $("send").disabled = false; log("connected"); };
+    ws.onmessage = (e) => {
+      let shown = e.data;
+      try { const m = JSON.parse(e.data); shown = (m.from || m.senderId || "") + (m.from || m.senderId ? ": " : "") + (m.text || m.content || m.message || e.data); } catch {}
+      log(shown, "recv");
+    };
+    ws.onerror = () => {};
+    ws.onclose = (e) => {
+      $("send").disabled = true;
+      status("Disconnected (code " + e.code + "). Reconnecting...", "bad");
+      const secs = openedAt ? Math.round((Date.now() - openedAt) / 1000) : 0;
+      const sinceSend = lastSentAt ? Math.round((Date.now() - lastSentAt) / 1000) + "s after your last send" : "no message sent yet";
+      log("closed " + e.code + " " + (e.reason || "") + " | open for " + secs + "s | " + sinceSend, "err");
+      openedAt = 0;
+      retry++;
+      setTimeout(connect, Math.min(3000 * retry, 15000));
+    };
+  }
+  connect();
+
+  // Keep-alive: the server ignores messages with no targetId, so this is harmless.
+  setInterval(() => { if (ws && ws.readyState === WebSocket.OPEN) ws.send("{}"); }, 8000);
+
+  function send() {
+    const to = $("to").value.trim();
+    const text = $("msg").value;
+    if (!to) return log("Enter who to send to first", "err");
+    if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const esc = (s) => JSON.stringify(s).slice(1, -1);
+    const payload = $("fmt").value.replaceAll("{{to}}", esc(to)).replaceAll("{{text}}", esc(text));
+    ws.send(payload);
+    lastSentAt = Date.now();
+    log(text, "sent");
+    $("msg").value = "";
+  }
+  $("send").onclick = send;
+  $("msg").addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+  $("copy").onclick = () => { navigator.clipboard.writeText(me); $("copy").textContent = "Copied"; setTimeout(() => $("copy").textContent = "Copy", 1200); };
+</script>
+</body>
+</html>

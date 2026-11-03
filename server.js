@@ -168,6 +168,14 @@ wss.on('connection', async (ws, req) => {
 
             // Route 2: Intelligent Global Routing
             const targetServerId = await pub.hget(REGISTRY_KEY, targetId);
+            if (targetServerId) {
+              const receivers = await pub.publish(`channel_${targetServerId}`, serializedPayload);
+              if (receivers > 0) {
+                ws.send(JSON.stringify({ status: "msg_ack", messageId, targetId, deliveryMode: "routed_cross_server" }));
+                return;
+               }
+               await pub.hdel(REGISTRY_KEY, targetId); // stale entry from a crashed node
+            }
 
             if (targetServerId) {
                 const targetChannel = `channel_${targetServerId}`;

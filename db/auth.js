@@ -1,30 +1,18 @@
-import crypto from 'crypto'; 
-import { db } from './offlineMessage.js'; 
+import 'dotenv/config';
+import crypto from 'crypto';
+import { neon } from '@neondatabase/serverless';
 
-export async function authenticateToken(plainToken) { 
-  if (!plainToken || typeof plainToken !== 'string') {
-    return { error: 'No Token' }; 
-  }
+const sql = neon(process.env.DATABASE_URL); // same Neon DB the REST server writes to
 
-  // Hash token securely
-  const hashToken = crypto.createHash('sha256').update(plainToken).digest('hex'); 
+export async function authenticateToken(plainToken) {
+  if (!plainToken || typeof plainToken !== 'string') return { error: 'No Token' };
 
+  const hash = crypto.createHash('sha256').update(plainToken).digest('hex');
   try {
-    // Note: ensure your DB library returns [rows] as an array
-    const [rows] = await db.query(
-      'SELECT userId FROM tokenhash WHERE tokenhash = ? AND is_valid = 1 LIMIT 1',
-      [hashToken]
-    ); 
-
-    if (!rows || rows.length === 0) { 
-      return { error: 'InvalidToken' }; 
-    } 
-
-    const { userId } = rows[0]; 
-    return { userId }; 
-
+    const [row] = await sql`SELECT user_id FROM devices WHERE tokenhash = ${hash} LIMIT 1`;
+    if (!row) return { error: 'InvalidToken' };
+    return { userId: row.user_id };
   } catch (error) {
-    // Log the actual error internally, but don't expose it to the client
     console.error('Database authentication error:', error);
     return { error: 'InternalServerError' };
   }
