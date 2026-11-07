@@ -148,68 +148,40 @@ wss.on('connection', async (ws, req) => {
             // this is what we send to the target (or publish via Redis)
             const serializedPayload = JSON.stringify(structuredPayload);
 
-            // Route 1: Target is connected to this server
-            if (localConnections.has(targetId)) {
-                const localTargetWs = localConnections.get(targetId);
-                if (localTargetWs.readyState === WebSocket.OPEN) {
-                    localTargetWs.send(serializedPayload);
-                }
-                //notify user that msg is received
-                // Notify sender that message was delivered directly on this instance
-                ws.send(JSON.stringify({
-                    status: "msg_ack",
-                    messageId,
-                    targetId,
-                    deliveryMode: "direct"
-                }));
+            // Route 1: target has an OPEN socket on this server
+            const localTargetWs = localConnections.get(targetId);
+            if (localTargetWs && localTargetWs.readyState === WebSocket.OPEN) {
+                localTargetWs.send(serializedPayload);
+                ws.send(JSON.stringify({ status: "msg_ack", messageId, targetId, deliveryMode: "direct" }));
                 return;
-                
             }
+            // Dead socket still in the map: forget it so it is treated as offline
+            if (localTargetWs) localConnections.delete(targetId);
 
-            // Route 2: Intelligent Global Routing
+            // Route 2: target is connected to ANOTHER server instance
             const targetServerId = await pub.hget(REGISTRY_KEY, targetId);
-            if (targetServerId) {
-              const receivers = await pub.publish(`channel_${targetServerId}`, serializedPayload);
-              if (receivers > 0) {
-                ws.send(JSON.stringify({ status: "msg_ack", messageId, targetId, deliveryMode: "routed_cross_server" }));
-                return;
-               }
-               await pub.hdel(REGISTRY_KEY, targetId); // stale entry from a crashed node
+            if (targetServerId && targetServerId !== SERVER_ID) {
+                const receivers = await pub.publish(`channel_${targetServerId}`, serializedPayload);
+                if (receivers > 0) {
+                    ws.send(JSON.stringify({ status: "msg_ack", messageId, targetId, deliveryMode: "routed_cross_server" }));
+                    return;
+                }
             }
+            // Stale registry entry (crashed node or dead local socket): clear it
+            if (targetServerId) await pub.hdel(REGISTRY_KEY, targetId);
 
-            if (targetServerId) {
-                const targetChannel = `channel_${targetServerId}`;
-                await pub.publish(targetChannel, serializedPayload);
-                //notify user msg is sent and received
-                // Notify sender that message was routed over Redis pub/sub
-                ws.send(JSON.stringify({
-                    status: "msg_ack",
-                    messageId,
-                    targetId,
-                    deliveryMode: "routed_cross_server"
-                }));
-            } else {
-                console.log(`User ${targetId} is offline. Routing transaction to Astra DB...`);
-
-                const offlineInboxCollection = db.collection("offline_inbox");
-
-                // Drop a clean JSON document matching our unified layout into Astra DB
-                await offlineInboxCollection.insertOne({
-                    userId: targetId,           // Indexed primary lookup key for user reconnection
-                    messageId,
-                    senderId,
-                    content: content || null,
-                    mediaUrl: mediaUrl || null,
-                    timestamp: new Date()       // Astra optimizes native Date objects automatically
-                });
-
-                // Notify the sender that the packet was safely deposited offline
-                ws.send(JSON.stringify({
-                    status: "cached_offline",
-                    messageId,
-                    targetId
-                }));
-            }
+            // Route 3: target is offline, so park the message in the offline inbox
+            console.log(`User ${targetId} is offline. Routing transaction to Astra DB...`);
+            const offlineInboxCollection = db.collection("offline_inbox");
+            await offlineInboxCollection.insertOne({
+                userId: targetId,
+                messageId,
+                senderId,
+                content: content || null,
+                mediaUrl: mediaUrl || null,
+                timestamp: new Date()
+            });
+            ws.send(JSON.stringify({ status: "cached_offline", messageId, targetId }));
         } catch (err) {
             console.error("Invalid frame payload formatting received", err);
         }
